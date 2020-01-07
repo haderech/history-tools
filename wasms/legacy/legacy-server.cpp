@@ -58,7 +58,13 @@ struct abi {
     abieos::contract contract{};
 };
 
-std::unique_ptr<abi> get_abi(eosio::name name, uint32_t snapshot_block) {
+const abi* get_abi(eosio::name name, uint32_t snapshot_block) {
+    static std::map<std::pair<eosio::name,uint32_t>,std::unique_ptr<abi>> abi_cache;
+    auto key = std::make_pair(name, snapshot_block);
+    auto it = abi_cache.find(key);
+    if (it != abi_cache.end())
+        return it->second.get();
+
     auto result = std::make_unique<abi>();
     auto raw    = get_raw_abi(name, snapshot_block);
     if (!raw.remaining())
@@ -71,10 +77,24 @@ std::unique_ptr<abi> get_abi(eosio::name name, uint32_t snapshot_block) {
         return {};
     if (!fill_contract(result->contract, error, result->def))
         return {};
-    return result;
+    abi_cache[key] = std::move(result);
+    return abi_cache[key].get();
 }
 
-abieos::abi_type* get_table_type(::abi* abi, abieos::name table) {
+const abieos::abi_type* get_action_type(const ::abi* abi, abieos::name action) {
+    if (!abi)
+        return nullptr;
+    for (auto& action_def : abi->def.actions) {
+        if (action_def.name == action) {
+            auto it = abi->contract.abi_types.find(action_def.type);
+            if (it != abi->contract.abi_types.end())
+                return &it->second;
+        }
+    }
+    return nullptr;
+}
+
+const abieos::abi_type* get_table_type(const ::abi* abi, abieos::name table) {
     if (!abi)
         return nullptr;
     for (auto& table_def : abi->def.tables) {
@@ -329,7 +349,7 @@ eosio::name get_table_index_name(const get_table_rows_params& p, bool& primary) 
 } // get_table_index_name
 
 void get_table_rows_primary(
-    const get_table_rows_params& params, const eosio::database_status& status, uint64_t scope, abieos::abi_type* table_type) {
+    const get_table_rows_params& params, const eosio::database_status& status, uint64_t scope, const abieos::abi_type* table_type) {
 
     auto lower_bound = convert_key(*params.key_type, *params.lower_bound, (uint64_t)0);
     auto upper_bound = convert_key(*params.key_type, *params.upper_bound, (uint64_t)0xffff'ffff'ffff'ffff);
@@ -389,7 +409,7 @@ void get_table_rows_primary(
 
 template <typename T>
 void get_table_rows_secondary(
-    const get_table_rows_params& params, const eosio::database_status& status, uint64_t scope, abieos::abi_type* table_type) {
+    const get_table_rows_params& params, const eosio::database_status& status, uint64_t scope, const abieos::abi_type* table_type) {
 
     auto lower_bound = convert_key(*params.key_type, *params.lower_bound, (T)0);
     auto upper_bound = convert_key(*params.key_type, *params.upper_bound, (T)0xffff'ffff'ffff'ffff);
@@ -453,8 +473,8 @@ void get_table_rows(std::string_view request, const eosio::database_status& stat
     auto                   params           = eosio::parse_json<get_table_rows_params>(request);
     bool                   primary          = false;
     auto                   table_with_index = get_table_index_name(params, primary);
-    std::unique_ptr<::abi> abi              = params.json ? get_abi(params.code, status.head) : nullptr;
-    auto                   table_type       = get_table_type(abi.get(), abieos::name{params.table.value});
+    auto                   abi              = params.json ? get_abi(params.code, status.head) : nullptr;
+    auto                   table_type       = get_table_type(abi, abieos::name{params.table.value});
     auto                   scope            = guess_uint64(*params.scope, "scope");
 
     if (primary)
@@ -521,8 +541,8 @@ void get_currency_balance(std::string_view request, const eosio::database_status
     };
     bool                   primary          = false;
     auto                   table_with_index = get_table_index_name(params, primary);
-    std::unique_ptr<::abi> abi              = params.json ? get_abi(params.code, status.head) : nullptr;
-    auto                   table_type       = get_table_type(abi.get(), abieos::name{params.table.value});
+    auto                   abi              = params.json ? get_abi(params.code, status.head) : nullptr;
+    auto                   table_type       = get_table_type(abi, abieos::name{params.table.value});
 
     if (!primary)
         eosio::check(false, ("accounts table missing or missing primary index"));
@@ -559,7 +579,7 @@ void get_currency_balance(std::string_view request, const eosio::database_status
     eosio::set_output_data(result);
 }
 
-void get_transaction(std::string_view request, const eosio::database_status& /*status*/) {
+void get_transaction(std::string_view request, const eosio::database_status& status) {
     auto params = eosio::parse_json<get_transaction_params>(request);
 
     auto s = query_database(eosio::query_transaction_receipt{
@@ -579,11 +599,39 @@ void get_transaction(std::string_view request, const eosio::database_status& /*s
         .max_results = 1,
     });
 
-    std::string result;
+    std::string result = "{\"id\":";
+    result += (to_json(params.id) + ",\"traces\":[").sv();
+    bool first = true;
     eosio::for_each_query_result<eosio::action_trace>(s, [&](eosio::action_trace& r) {
-        result += to_json(r).sv();
+        if (!first)
+            result += ", ";
+        first = false;
+        result += "{\"act\":{\"account\":";
+        result += (to_json(r.action.account) + ",\"name\":").sv();
+        result += (to_json(r.action.name) + ",\"data\":").sv();
+
+        auto abi = get_abi(r.action.account, status.head);
+        auto action_type = get_action_type(abi, abieos::name{r.action.name.value});
+        bool decoded = false;
+        if (action_type) {
+            abieos::input_buffer bin{r.action.data->pos(), r.action.data->pos() + r.action.data->remaining()};
+            std::string error;
+            std::string json_data;
+            if (bin_to_json(bin, error, action_type, json_data)) {
+                result += json_data;
+                decoded = true;
+            }
+        }
+        if (!decoded) {
+            result += "\"";
+            abieos::hex(r.action.data->pos(), r.action.data->pos() + r.action.data->remaining(), std::back_inserter(result));
+            result += "\"}";
+        }
+        result += "}}";
+        //result += to_json(r).sv();
         return true;
     });
+    result += "]}";
     eosio::set_output_data(result);
 }
 
