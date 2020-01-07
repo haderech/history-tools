@@ -29,7 +29,7 @@ set(Boost_USE_STATIC_LIBS ON)
 
 add_definitions(-DBOOST_ASIO_DISABLE_STD_EXPERIMENTAL_STRING_VIEW)
 
-find_package(eosio.cdt)
+find_package(eoscc)
 find_package(PostgreSQL COMPONENTS Libraries)
 find_package(Boost 1.70 REQUIRED COMPONENTS date_time filesystem chrono system iostreams program_options unit_test_framework)
 find_package(PkgConfig REQUIRED)
@@ -203,12 +203,12 @@ if (NOT PostgreSQL_INCLUDE_DIR AND NOT FOUND_ROCKSDB)
     message(WARNING "No database libraries found. Only building WASM files.")
 endif()
 
-if (eosio.cdt_FOUND)
+if (eoscc_FOUND)
     ExternalProject_Add(
         wasms_project
         SOURCE_DIR ${CMAKE_SOURCE_DIR}/wasms
         BINARY_DIR ${CMAKE_BINARY_DIR}/wasms
-        CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${EOSIO_CDT_ROOT}/lib/cmake/eosio.cdt/EosioWasmToolchain.cmake
+        CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${EOSIO_CDT_ROOT}/lib/cmake/eoscc/EosioWasmToolchain.cmake
         UPDATE_COMMAND ""
         PATCH_COMMAND ""
         TEST_COMMAND ""

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(wasms)
 
 set(EOSIO_WASM_OLD_BEHAVIOR "off")
-find_package(eosio.cdt)
+find_package(eoscc)
 
 set(ROOT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(ROOT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/..)
